@@ -48,12 +48,29 @@ function toolResult(value) {
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value };
 }
 
-function publicError(error) {
-  const message = String(error && error.message ? error.message : error || 'Unknown error');
-  if (/[A-Za-z]:[\\/]|^[\\/]|\\|\.\.[\/]|[\/]\.\./.test(message)) {
-    return 'Skill operation failed: path rejected or unavailable';
-  }
-  return message.slice(0, 500);
+function classifyToolError(error) {
+  const detail = String(error && error.message ? error.message : error || 'Unknown error').toLowerCase();
+  if (detail.includes('hash mismatch')) return 'SR_HASH_MISMATCH';
+  if (detail.includes('not found') || detail.includes('unavailable')) return 'SR_NOT_FOUND';
+  if (detail.includes('too large')) return 'SR_FILE_REJECTED';
+  if (detail.includes('unknown tool') || detail.includes('requires a')) return 'SR_INVALID_REQUEST';
+  if (/path|traversal|absolute|symlink|junction|escape|invalid skill id|source root/.test(detail)) return 'SR_PATH_REJECTED';
+  if (detail.includes('manifest')) return 'SR_MANIFEST_UNAVAILABLE';
+  return 'SR_INTERNAL';
+}
+
+function toolErrorResult(error) {
+  const code = classifyToolError(error);
+  const detail = String(error && error.message ? error.message : error || 'Unknown error')
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 2000);
+  process.stderr.write(`[skill-router-v2] tool error ${code}: ${detail}\n`);
+  const message = 'Skill operation failed';
+  return {
+    isError: true,
+    content: [{ type: 'text', text: `${message} [${code}]` }],
+    structuredContent: { code, message },
+  };
 }
 
 async function handle(message) {
@@ -68,7 +85,7 @@ async function handle(message) {
       reply(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'skill-router-v2', version: '2.0.0' }
+        serverInfo: { name: 'skill-router-v2', version: '2.1.0' }
       });
       return;
     }
@@ -104,7 +121,7 @@ async function handle(message) {
     errorReply(id, -32601, `Method not found: ${message.method}`);
   } catch (error) {
     if (message.method === 'tools/call') {
-      reply(id, { isError: true, content: [{ type: 'text', text: publicError(error) }] });
+      reply(id, toolErrorResult(error));
     } else {
       errorReply(id, -32000, error.message);
     }

@@ -14,7 +14,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function regenerate(vault, output) {
+function regenerate(vault, output, { sourceRoot } = {}) {
   const root = path.resolve(expandHome(vault));
   const generatorLog = console.log;
   const logs = [];
@@ -22,6 +22,10 @@ function regenerate(vault, output) {
   let manifest;
   try { manifest = generateManifest([root]); }
   finally { console.log = generatorLog; }
+  if (sourceRoot) {
+    const finalRoot = path.resolve(expandHome(sourceRoot));
+    manifest.skills = manifest.skills.map(skill => ({ ...skill, source_root: finalRoot }));
+  }
   const out = path.resolve(expandHome(String(output)));
   const liveManifest = path.join(root, '.router', 'manifest.json');
   if (path.resolve(out) === path.resolve(liveManifest)) throw new Error('Refusing to overwrite the vault live manifest; choose a separate output path');

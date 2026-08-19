@@ -18,16 +18,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Syntax check all JS
+      - name: Syntax check all JavaScript
         shell: bash
         run: |
           status=0
           while IFS= read -r f; do
             node --check "$f" || status=1
-          done < <(find . -name '*.js' -not -path './.git/*')
+          done < <(find . \( -name '*.js' -o -name '*.mjs' \) -not -path './.git/*')
           exit $status
       - name: Run test suite
         run: node tests/run-tests.js
-      - name: Setup dry-run (no system changes)
-        shell: bash
-        run: node setup.mjs --dry-run --home "$HOME/.sr-ci-home" || true
+
+  lifecycle:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run sandboxed setup, MCP, rollback, reinstall, and uninstall lifecycle
+        run: node tests/lifecycle-test.mjs

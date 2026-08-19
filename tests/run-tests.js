@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { SkillRouterV2, hashBuffer, isSafeRelative } = require('../lib/router-core.js');
 const { stubFromContent } = require('../probes/make-stub.js');
 const { migrate } = require('../migrate/migrate-canary.js');
@@ -41,13 +41,19 @@ function expectThrows(fn, pattern) {
   assert.throws(fn, error => pattern.test(error.message), `Expected error matching ${pattern}`);
 }
 
-async function invokeMcp(lines, activeManifest = manifestPath) {
+async function invokeMcpDetailed(lines, activeManifest = manifestPath) {
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'mcp', 'server.js')], { env: { ...process.env, SKILL_ROUTER_MANIFEST: activeManifest }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
   child.stdin.end(lines.map(line => JSON.stringify(line)).join(String.fromCharCode(10)) + String.fromCharCode(10));
   await new Promise((resolve, reject) => { child.on('close', code => code === 0 ? resolve() : reject(new Error('server exited ' + code))); });
-  return stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+  return { replies: stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)), stderr };
+}
+
+async function invokeMcp(lines, activeManifest = manifestPath) {
+  return (await invokeMcpDetailed(lines, activeManifest)).replies;
 }
 
 async function protocolSmoke() {
@@ -68,18 +74,29 @@ async function protocolSmoke() {
   assert.strictEqual(typeof replies[3].result.structuredContent, 'object');
   assert(Array.isArray(replies[3].result.structuredContent.results));
   assert(!Array.isArray(replies[3].result.structuredContent));
+  assert.deepStrictEqual(replies[4].result.structuredContent, { code: 'SR_PATH_REJECTED', message: 'Skill operation failed' });
+  assert.strictEqual(replies[4].result.content[0].text, 'Skill operation failed [SR_PATH_REJECTED]');
   assert(!JSON.stringify(replies[4]).match(/[A-Za-z]:[\\/]/));
+
+  const [missingReply] = await invokeMcp([
+    { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'skill_load', arguments: { id: 'missing-skill' } } }
+  ]);
+  assert.deepStrictEqual(missingReply.result.structuredContent, { code: 'SR_NOT_FOUND', message: 'Skill operation failed' });
 
   const leakManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   leakManifest.skills.find(skill => skill.id === 'alpha').content_hash = 'C:\\manifest-private\\content-hash';
   const leakManifestPath = path.join(root, 'path-leak-manifest.json');
   write(leakManifestPath, JSON.stringify(leakManifest));
-  const [leakReply] = await invokeMcp([
+  const leakResult = await invokeMcpDetailed([
     { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'skill_load', arguments: { id: 'alpha' } } }
   ], leakManifestPath);
+  const [leakReply] = leakResult.replies;
   assert.strictEqual(leakReply.result.isError, true);
-  assert.strictEqual(leakReply.result.content[0].text, 'Skill operation failed: path rejected or unavailable');
+  assert.strictEqual(leakReply.result.content[0].text, 'Skill operation failed [SR_HASH_MISMATCH]');
+  assert.deepStrictEqual(leakReply.result.structuredContent, { code: 'SR_HASH_MISMATCH', message: 'Skill operation failed' });
   assert(!JSON.stringify(leakReply).includes('C:\\manifest-private\\content-hash'));
+  assert(leakResult.stderr.includes('[skill-router-v2] tool error SR_HASH_MISMATCH:'));
+  assert(leakResult.stderr.includes('C:\\manifest-private\\content-hash'));
 }
 
 async function main() {
@@ -176,6 +193,7 @@ async function main() {
   assert(!fs.existsSync(vaultRoot) || fs.readdirSync(vaultRoot).length === 0);
   assert(!fs.existsSync(stubRoot) || fs.readdirSync(stubRoot).length === 0);
   await protocolSmoke();
+  execFileSync(process.execPath, [path.join(__dirname, 'lifecycle-test.mjs')], { stdio: 'inherit' });
   process.stdout.write('PASS skill-router-v2 tests\n');
 }
 
